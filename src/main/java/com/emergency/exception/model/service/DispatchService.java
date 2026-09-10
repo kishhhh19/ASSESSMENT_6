@@ -1,42 +1,60 @@
 package com.emergency.service;
 
+import com.emergency.exception.InvalidEmergencyRequestException;
 import com.emergency.model.*;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
 
-import static org.junit.jupiter.api.Assertions.*;
+import java.util.*;
+import java.util.concurrent.PriorityBlockingQueue;
 
-public class DispatchServiceTest {
-    private DispatchService dispatchService;
-    private Ambulance testAmbulance;
+public class DispatchService {
+    private final PriorityBlockingQueue<EmergencyRequest> waitingQueue = new PriorityBlockingQueue<>();
+    private final List<Ambulance> ambulances = new ArrayList<>();
+    private final List<String> emergencyHistory = new ArrayList<>();
 
-    @BeforeEach
-    public void setUp() {
-        dispatchService = new DispatchService();
-        Driver driver = new Driver("D001", "John Doe", "LIC12345");
-        testAmbulance = new Ambulance("A001", AmbulanceType.ICU, driver);
-        dispatchService.registerAmbulance(testAmbulance);
+    public void registerAmbulance(Ambulance ambulance) {
+        ambulances.add(ambulance);
     }
 
-    @Test
-    public void testImmediateDispatch() {
-        EmergencyRequest request = new EmergencyRequest("P001", "Cardiac", EmergencyPriority.CRITICAL, "Zone A", "City Hospital", 3.5);
-        dispatchService.processEmergency(request, AmbulanceType.ICU);
+    public synchronized void processEmergency(EmergencyRequest request, AmbulanceType requiredType) {
+        if (request == null || request.getPickupLocation() == null) {
+            throw new InvalidEmergencyRequestException("Invalid emergency request parameters.");
+        }
 
-        assertEquals("DISPATCHED", request.getStatus());
-        assertEquals(AmbulanceState.DISPATCHED, testAmbulance.getState());
+        Ambulance allocated = findAvailableAmbulance(requiredType);
+        if (allocated != null) {
+            assignAmbulance(request, allocated);
+        } else {
+            waitingQueue.add(request);
+            request.setStatus("WAITING");
+            emergencyHistory.add("Queued emergency for patient: " + request.getPatientId());
+        }
     }
 
-    @Test
-    public void testQueueWhenAmbulanceBusy() {
-        EmergencyRequest request1 = new EmergencyRequest("P001", "Cardiac", EmergencyPriority.CRITICAL, "Zone A", "City Hospital", 3.5);
-        EmergencyRequest request2 = new EmergencyRequest("P002", "Trauma", EmergencyPriority.CRITICAL, "Zone B", "City Hospital", 1.0);
-
-        dispatchService.processEmergency(request1, AmbulanceType.ICU);
-        dispatchService.processEmergency(request2, AmbulanceType.ICU);
-
-        assertEquals("DISPATCHED", request1.getStatus());
-        assertEquals("WAITING", request2.getStatus());
-        assertEquals(1, dispatchService.getWaitingQueue().size());
+    private Ambulance findAvailableAmbulance(AmbulanceType type) {
+        return ambulances.stream()
+                .filter(a -> a.getState() == AmbulanceState.AVAILABLE && a.getAmbulanceType() == type)
+                .findFirst()
+                .orElse(null);
     }
+
+    private void assignAmbulance(EmergencyRequest request, Ambulance ambulance) {
+        ambulance.setState(AmbulanceState.DISPATCHED);
+        request.setStatus("DISPATCHED");
+        emergencyHistory.add("Assigned Ambulance " + ambulance.getAmbulanceId() + " to Patient " + request.getPatientId());
+    }
+
+    public synchronized void updateAmbulanceState(Ambulance ambulance, AmbulanceState newState) {
+        ambulance.setState(newState);
+        emergencyHistory.add("Ambulance " + ambulance.getAmbulanceId() + " state updated to " + newState);
+
+        if (newState == AmbulanceState.AVAILABLE && !waitingQueue.isEmpty()) {
+            EmergencyRequest nextRequest = waitingQueue.poll();
+            if (nextRequest != null) {
+                assignAmbulance(nextRequest, ambulance);
+            }
+        }
+    }
+
+    public List<String> getEmergencyHistory() { return emergencyHistory; }
+    public PriorityBlockingQueue<EmergencyRequest> getWaitingQueue() { return waitingQueue; }
 }
